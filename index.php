@@ -4,16 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lecteur de flux RSS/Atom</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-	<link rel="stylesheet" href="styles.css">
-	<style>
+    <style>
         body {
             font-family: Arial, sans-serif;
             margin: 20px;
             line-height: 1.6;
             background-color: #f9f9f9;
         }
-        /* Style commun pour tous les boutons */
         .btn {
             display: inline-block;
             padding: 8px 12px;
@@ -56,6 +53,21 @@
         .btn-link:hover {
             color: #0052a3;
         }
+        .btn-collapse {
+            background-color: #e0e0e0;
+            color: #333;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        .btn-collapse:hover {
+            background-color: #d0d0d0;
+        }
         .tabs {
             display: flex;
             margin-bottom: 20px;
@@ -91,6 +103,9 @@
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
             border: 1px solid #e0e0e0;
         }
+        .feed.collapsed .feed-content {
+            display: none;
+        }
         .feed-name {
             font-weight: bold;
             font-size: 1.2em;
@@ -108,6 +123,9 @@
         }
         .feed-name a:hover {
             text-decoration: underline;
+        }
+        .feed-content {
+            transition: all 0.3s ease;
         }
         .feed-item {
             margin-bottom: 20px;
@@ -169,10 +187,13 @@
             text-align: right;
             margin-top: 10px;
         }
-        .clearfix::after {
-            content: "";
-            display: table;
-            clear: both;
+        .error {
+            color: #d32f2f;
+            background-color: #ffebee;
+            padding: 8px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 0.9em;
         }
     </style>
 </head>
@@ -187,6 +208,42 @@
     </div>
 
     <?php
+	function getFaviconUrl($siteUrl) {
+		// Extraire le domaine de l'URL
+		$parsedUrl = parse_url($siteUrl);
+		$domain = $parsedUrl['scheme'] . '://' . $parsedUrl['host'];
+
+		// URL par défaut du favicon
+		$faviconUrl = $domain . '/favicon.ico';
+
+		// Vérifier si le favicon existe
+		$headers = @get_headers($faviconUrl);
+		if ($headers && strpos($headers[0], '200')) {
+			return $faviconUrl;
+		}
+
+		// Si le favicon n'est pas trouvé à l'emplacement par défaut,
+		// on peut essayer de parser le HTML pour trouver la balise <link rel="icon">
+		$html = @file_get_contents($siteUrl);
+		if ($html) {
+			$dom = new DOMDocument();
+			@$dom->loadHTML($html);
+			$links = $dom->getElementsByTagName('link');
+			foreach ($links as $link) {
+				if ($link->getAttribute('rel') === 'icon' || $link->getAttribute('rel') === 'shortcut icon') {
+					$href = $link->getAttribute('href');
+					// Si l'URL est relative, la rendre absolue
+					if (strpos($href, 'http') !== 0) {
+						$href = $domain . (substr($href, 0, 1) === '/' ? '' : '/') . $href;
+					}
+					return $href;
+				}
+			}
+		}
+		// Retourner null si aucun favicon n'est trouvé
+		return null;
+	}
+	
     function filterRecentItems($items, $maxAgeDays) {
         $filteredItems = [];
         $now = time();
@@ -298,237 +355,284 @@
     </div>
     <?php endif; ?>
 
-    <?php
-    foreach ($feedsXml->feed as $feed) {
-        $feedCategory = (string)$feed['category'];
-        if ($feedCategory !== $selectedCategory) {
-            continue;
-        }
+    <!-- Conteneur pour les flux -->
+    <div id="feeds-container">
+        <?php
+        foreach ($feedsXml->feed as $feed) {
+            $feedCategory = (string)$feed['category'];
+            if ($feedCategory !== $selectedCategory) {
+                continue;
+            }
 
-        $feedId = (string)$feed['id'];
-        $feedName = (string)$feed->name;
-        $feedUrl = (string)$feed->url;
-        $display = (string)$feed->display;
-        $maxAgeDays = isset($feed->max_age_days) ? (int)$feed->max_age_days : 2;
+            $feedId = (string)$feed['id'];
+            $feedName = (string)$feed->name;
+            $feedUrl = (string)$feed->url;
+            $display = (string)$feed->display;
+            $maxAgeDays = isset($feed->max_age_days) ? (int)$feed->max_age_days : 2;
+            $isCollapsed = (string)$feed['collapsed'] === 'true';
 
-        echo "<div class='feed clearfix'>";
-
-        // Chargement du flux
-        $context = stream_context_create([
-            'http' => [
-                'timeout' => 10,
-                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            ]
-        ]);
-
-        $feedContent = @file_get_contents($feedUrl, false, $context);
-
-        if ($feedContent === false) {
+            echo "<div class='feed" . ($isCollapsed ? ' collapsed' : '') . "' data-feed-id='$feedId'>";
             echo "<div class='feed-name'>";
-            echo "<span>$feedName</span>";
+
+            // Bouton pour plier/déplier
+            echo "<button class='btn-collapse' onclick='toggleFeedCollapse($feedId)'>" . ($isCollapsed ? '+' : '−') . "</button>";
+
+            $context = stream_context_create([
+                'http' => [
+                    'timeout' => 5,
+                    'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                ]
+            ]);
+            $feedContent = @file_get_contents($feedUrl, false, $context);
+            $feedData = $feedContent ? simplexml_load_string($feedContent) : null;
+            $feedLink = $feedData ? getFeedLink($feedData) : null;
+
+            if ($feedLink) {
+				$faviconUrl = getFaviconUrl($feedLink);
+				if ($faviconUrl) {
+					echo '<img src="' . htmlspecialchars($faviconUrl) . '" alt="Favicon" width="48" height="48" /> ';
+				}
+				echo htmlspecialchars($feedTitle); // Affiche le titre du flux
+                echo "<a href='" . htmlspecialchars($feedLink) . "' target='_blank'>$feedName</a>";
+            } else {
+                echo "<span>$feedName</span>";
+            }
+
             echo "<div>";
-            echo "<a href='edit_feed.php?id=$feedId' class='btn btn-secondary'><i class='fas fa-edit'></i> Modifier</a>";
-            echo "<a href='delete_feed.php?id=$feedId' class='btn btn-danger' onclick='return confirm(\"Voulez-vous vraiment supprimer ce flux ?\");'><i class='fas fa-trash'></i> Supprimer</a>";
+            echo "<a href='edit_feed.php?id=$feedId' class='btn btn-secondary'>Modifier</a>";
+            echo "<a href='delete_feed.php?id=$feedId' class='btn btn-danger' onclick='return confirm(\"Voulez-vous vraiment supprimer ce flux ?\");'>Supprimer</a>";
             echo "</div>";
             echo "</div>";
-            echo "<p class='error'>Impossible de charger le flux pour $feedName (URL inaccessible ou timeout).</p>";
-            continue;
-        }
 
-        $feedData = simplexml_load_string($feedContent);
+            // Contenu du flux (peut être masqué si plié)
+            echo "<div class='feed-content'>";
 
-        if ($feedData === false) {
-            echo "<div class='feed-name'>";
-            echo "<span>$feedName</span>";
-            echo "<div>";
-            echo "<a href='edit_feed.php?id=$feedId' class='btn btn-secondary'><i class='fas fa-edit'></i> Modifier</a>";
-            echo "<a href='delete_feed.php?id=$feedId' class='btn btn-danger' onclick='return confirm(\"Voulez-vous vraiment supprimer ce flux ?\");'><i class='fas fa-trash'></i> Supprimer</a>";
-            echo "</div>";
-            echo "</div>";
-            $errors = libxml_get_errors();
-            $errorMsg = "Erreur dans le flux pour $feedName : ";
-            foreach ($errors as $error) {
-                $errorMsg .= $error->message . " ";
-            }
-            libxml_clear_errors();
-            echo "<p class='error'>$errorMsg</p>";
-            continue;
-        }
+            if ($feedContent !== false) {
+                libxml_use_internal_errors(true);
+                $feedData = simplexml_load_string($feedContent);
+                $errors = libxml_get_errors();
+                libxml_clear_errors();
 
-        $feedLink = getFeedLink($feedData);
-
-        echo "<div class='feed-name'>";
-        if ($feedLink) {
-            echo "<a href='" . htmlspecialchars($feedLink) . "' target='_blank'>$feedName</a>";
-        } else {
-            echo "<span>$feedName</span>";
-        }
-        echo "<div>";
-        echo "<a href='edit_feed.php?id=$feedId' class='btn btn-secondary'><i class='fas fa-edit'></i> Modifier</a>";
-        echo "<a href='delete_feed.php?id=$feedId' class='btn btn-danger' onclick='return confirm(\"Voulez-vous vraiment supprimer ce flux ?\");'><i class='fas fa-times'></i> Supprimer</a>";
-        echo "</div>";
-        echo "</div>";
-
-        $items = getFeedItems($feedData);
-        $feedImageUrl = getFeedImage($feedData);
-
-        if ($feedImageUrl) {
-            echo "<img src='" . htmlspecialchars($feedImageUrl) . "' class='feed-image' alt='Image du flux $feedName' />";
-        }
-
-        if ($display === 'recent') {
-            $items = filterRecentItems($items, $maxAgeDays);
-            foreach ($items as $item) {
-                $title = (string)($item->title ?: $item->name);
-                $link = (string)($item->link['href'] ?: $item->link);
-                $pubDate = getArticleDate($item);
-                $isOld = isOldArticle($pubDate);
-
-                echo "<div class='feed-item'>";
-                $articleImage = getArticleImage($item);
-                if ($articleImage) {
-                    echo "<img src='" . htmlspecialchars($articleImage) . "' class='article-image' alt='Image de l\'article' />";
-                }
-                echo "<div class='feed-item-title'>";
-                echo "<a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
-                if ($isOld) {
-                    echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
-                }
-                echo "</div>";
-                $description = (string)($item->content ?: $item->summary ?: $item->description);
-                echo "<div class='feed-item-description'>$description</div>";
-                echo "<div class='feed-item-date'>" . date('d/m/Y H:i', strtotime($pubDate)) . "</div>";
-                echo "</div>";
-            }
-        } elseif ($display === 'recent_titles') {
-            $items = filterRecentItems($items, $maxAgeDays);
-            foreach ($items as $item) {
-                $title = (string)($item->title ?: $item->name);
-                $link = (string)($item->link['href'] ?: $item->link);
-                $pubDate = getArticleDate($item);
-                $isOld = isOldArticle($pubDate);
-
-                echo "<div class='feed-item'>";
-                $articleImage = getArticleImage($item);
-                if ($articleImage) {
-                    echo "<img src='" . htmlspecialchars($articleImage) . "' style='max-width: 100px; display: inline-block; margin-right: 10px; vertical-align: middle;' />";
-                }
-                echo "<div class='feed-item-title' style='display: inline-block;'>";
-                echo "• <a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
-                if ($isOld) {
-                    echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
-                }
-                echo "</div>";
-                echo "</div>";
-            }
-        } elseif ($display === '10_titles') {
-            $limit = min(10, count($items));
-            for ($i = 0; $i < $limit; $i++) {
-                if (isset($items[$i])) {
-                    $item = $items[$i];
-                    $title = (string)($item->title ?: $item->name);
-                    $link = (string)($item->link['href'] ?: $item->link);
-                    $pubDate = getArticleDate($item);
-                    $isOld = isOldArticle($pubDate);
-
-                    echo "<div class='feed-item'>";
-                    $articleImage = getArticleImage($item);
-                    if ($articleImage) {
-                        echo "<img src='" . htmlspecialchars($articleImage) . "' style='max-width: 100px; display: inline-block; margin-right: 10px; vertical-align: middle;' />";
+                if ($feedData === false) {
+                    echo "<p class='error'>Erreur de parsing XML pour ce flux.</p>";
+                    foreach ($errors as $error) {
+                        echo "<p class='error'>" . $error->message . "</p>";
                     }
-                    echo "<div class='feed-item-title' style='display: inline-block;'>";
-                    echo "• <a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
-                    if ($isOld) {
-                        echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                } else {
+                    $items = getFeedItems($feedData);
+                    $feedImageUrl = getFeedImage($feedData);
+
+                    if ($feedImageUrl) {
+                        echo "<img src='" . htmlspecialchars($feedImageUrl) . "' class='feed-image' alt='Image du flux $feedName' />";
                     }
-                    echo "</div>";
-                    echo "</div>";
-                }
-            }
-        } elseif ($display === 'latest') {
-            if (isset($items[0])) {
-                $latestItem = $items[0];
-                $title = (string)($latestItem->title ?: $latestItem->name);
-                $link = (string)($latestItem->link['href'] ?: $latestItem->link);
-                $pubDate = getArticleDate($latestItem);
-                $isOld = isOldArticle($pubDate);
 
-                echo "<div class='feed-item'>";
-                $articleImage = getArticleImage($latestItem);
-                if ($articleImage) {
-                    echo "<img src='" . htmlspecialchars($articleImage) . "' class='article-image' alt='Image de l\'article' />";
-                }
-                echo "<div class='feed-item-title'>";
-                echo "<a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
-                if ($isOld) {
-                    echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
-                }
-                echo "</div>";
-                $description = (string)($latestItem->content ?: $latestItem->summary ?: $latestItem->description);
-                echo "<div class='feed-item-description'>$description</div>";
-                echo "<div class='feed-item-date'>" . date('d/m/Y H:i', strtotime($pubDate)) . "</div>";
-                echo "</div>";
+                    if ($display === 'recent') {
+                        $items = filterRecentItems($items, $maxAgeDays);
+                        if (empty($items)) {
+                            echo "<p class='error'>Aucun article récent trouvé.</p>";
+                        } else {
+                            foreach ($items as $item) {
+                                $title = (string)($item->title ?: $item->name);
+                                $link = (string)($item->link['href'] ?: $item->link);
+                                $pubDate = getArticleDate($item);
+                                $isOld = isOldArticle($pubDate);
 
-                echo "<div class='feed-item-title'>9 derniers titres :</div>";
-                for ($i = 1; $i < min(10, count($items)); $i++) {
-                    if (isset($items[$i])) {
-                        $item = $items[$i];
-                        $title = (string)($item->title ?: $item->name);
-                        $link = (string)($item->link['href'] ?: $item->link);
-                        $pubDate = getArticleDate($item);
-                        $isOld = isOldArticle($pubDate);
-
-                        echo "<div style='margin-left: 10px; margin-bottom: 5px;'>";
-                        $articleImage = getArticleImage($item);
-                        if ($articleImage) {
-                            echo "<img src='" . htmlspecialchars($articleImage) . "' style='max-width: 50px; display: inline-block; margin-right: 10px; vertical-align: middle;' />";
+                                echo "<div class='feed-item'>";
+                                $articleImage = getArticleImage($item);
+                                if ($articleImage) {
+                                    echo "<img src='" . htmlspecialchars($articleImage) . "' class='article-image' alt='Image de l\'article' />";
+                                }
+                                echo "<div class='feed-item-title'>";
+                                echo "<a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
+                                if ($isOld) {
+                                    echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                                }
+                                echo "</div>";
+                                $description = (string)($item->content ?: $item->summary ?: $item->description);
+                                echo "<div class='feed-item-description'>$description</div>";
+                                echo "<div class='feed-item-date'>Publié le " . date('d/m/Y H:i', strtotime($pubDate)) . "</div>";
+                                echo "</div>";
+                            }
                         }
-                        echo "<span>";
-                        echo "• <a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
-                        if ($isOld) {
-                            echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                    } elseif ($display === 'recent_titles') {
+                        $items = filterRecentItems($items, $maxAgeDays);
+                        if (empty($items)) {
+                            echo "<p class='error'>Aucun article récent trouvé.</p>";
+                        } else {
+                            foreach ($items as $item) {
+                                $title = (string)($item->title ?: $item->name);
+                                $link = (string)($item->link['href'] ?: $item->link);
+                                $pubDate = getArticleDate($item);
+                                $isOld = isOldArticle($pubDate);
+
+                                echo "<div class='feed-item'>";
+                                $articleImage = getArticleImage($item);
+                                if ($articleImage) {
+                                    echo "<img src='" . htmlspecialchars($articleImage) . "' style='max-width: 100px; display: inline-block; margin-right: 10px; vertical-align: middle;' />";
+                                }
+                                echo "<div class='feed-item-title' style='display: inline-block;'>";
+                                echo "• <a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
+                                if ($isOld) {
+                                    echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                                }
+                                echo "</div>";
+                                echo "</div>";
+                            }
                         }
-                        echo "</span>";
-                        echo "</div>";
-                    }
-                }
-            }
-        } else {
-            $limit = min(10, count($items));
-            for ($i = 0; $i < $limit; $i++) {
-                if (isset($items[$i])) {
-                    $item = $items[$i];
-                    $title = (string)($item->title ?: $item->name);
-                    $link = (string)($item->link['href'] ?: $item->link);
-                    $pubDate = getArticleDate($item);
-                    $isOld = isOldArticle($pubDate);
+                    } elseif ($display === '10_titles') {
+                        $limit = min(10, count($items));
+                        if ($limit === 0) {
+                            echo "<p class='error'>Aucun article trouvé.</p>";
+                        } else {
+                            for ($i = 0; $i < $limit; $i++) {
+                                if (isset($items[$i])) {
+                                    $item = $items[$i];
+                                    $title = (string)($item->title ?: $item->name);
+                                    $link = (string)($item->link['href'] ?: $item->link);
+                                    $pubDate = getArticleDate($item);
+                                    $isOld = isOldArticle($pubDate);
 
-                    echo "<div class='feed-item'>";
-                    $articleImage = getArticleImage($item);
-                    if ($articleImage) {
-                        echo "<img src='" . htmlspecialchars($articleImage) . "' class='article-image' alt='Image de l\'article' />";
+                                    echo "<div class='feed-item'>";
+                                    $articleImage = getArticleImage($item);
+                                    if ($articleImage) {
+                                        echo "<img src='" . htmlspecialchars($articleImage) . "' style='max-width: 100px; display: inline-block; margin-right: 10px; vertical-align: middle;' />";
+                                    }
+                                    echo "<div class='feed-item-title' style='display: inline-block;'>";
+                                    echo "• <a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
+                                    if ($isOld) {
+                                        echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                                    }
+                                    echo "</div>";
+                                    echo "</div>";
+                                }
+                            }
+                        }
+                    } elseif ($display === 'latest') {
+                        if (!empty($items) && isset($items[0])) {
+                            $latestItem = $items[0];
+                            $title = (string)($latestItem->title ?: $latestItem->name);
+                            $link = (string)($latestItem->link['href'] ?: $latestItem->link);
+                            $pubDate = getArticleDate($latestItem);
+                            $isOld = isOldArticle($pubDate);
+
+                            echo "<div class='feed-item'>";
+                            $articleImage = getArticleImage($latestItem);
+                            if ($articleImage) {
+                                echo "<img src='" . htmlspecialchars($articleImage) . "' class='article-image' alt='Image de l\'article' />";
+                            }
+                            echo "<div class='feed-item-title'>";
+                            echo "<a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
+                            if ($isOld) {
+                                echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                            }
+                            echo "</div>";
+                            $description = (string)($latestItem->content ?: $latestItem->summary ?: $latestItem->description);
+                            echo "<div class='feed-item-description'>$description</div>";
+                            echo "<div class='feed-item-date'>Publié le " . date('d/m/Y H:i', strtotime($pubDate)) . "</div>";
+                            echo "</div>";
+
+                            echo "<div class='feed-item-title'>9 derniers titres :</div>";
+                            $nextItems = array_slice($items, 1, 9);
+                            if (empty($nextItems)) {
+                                echo "<p>Pas d'autres articles.</p>";
+                            } else {
+                                foreach ($nextItems as $item) {
+                                    $title = (string)($item->title ?: $item->name);
+                                    $link = (string)($item->link['href'] ?: $item->link);
+                                    $pubDate = getArticleDate($item);
+                                    $isOld = isOldArticle($pubDate);
+
+                                    echo "<div style='margin-left: 10px; margin-bottom: 5px;'>";
+                                    $articleImage = getArticleImage($item);
+                                    if ($articleImage) {
+                                        echo "<img src='" . htmlspecialchars($articleImage) . "' style='max-width: 50px; display: inline-block; margin-right: 10px; vertical-align: middle;' />";
+                                    }
+                                    echo "<span>";
+                                    echo "• <a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
+                                    if ($isOld) {
+                                        echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                                    }
+                                    echo "</span>";
+                                    echo "</div>";
+                                }
+                            }
+                        } else {
+                            echo "<p class='error'>Aucun article trouvé dans ce flux.</p>";
+                        }
+                    } else {
+                        $limit = min(10, count($items));
+                        if ($limit === 0) {
+                            echo "<p class='error'>Aucun article trouvé.</p>";
+                        } else {
+                            for ($i = 0; $i < $limit; $i++) {
+                                if (isset($items[$i])) {
+                                    $item = $items[$i];
+                                    $title = (string)($item->title ?: $item->name);
+                                    $link = (string)($item->link['href'] ?: $item->link);
+                                    $pubDate = getArticleDate($item);
+                                    $isOld = isOldArticle($pubDate);
+
+                                    echo "<div class='feed-item'>";
+                                    $articleImage = getArticleImage($item);
+                                    if ($articleImage) {
+                                        echo "<img src='" . htmlspecialchars($articleImage) . "' class='article-image' alt='Image de l\'article' />";
+                                    }
+                                    echo "<div class='feed-item-title'>";
+                                    echo "<a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
+                                    if ($isOld) {
+                                        echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
+                                    }
+                                    echo "</div>";
+                                    $description = (string)($item->content ?: $item->summary ?: $item->description);
+                                    echo "<div class='feed-item-description'>$description</div>";
+                                    echo "<div class='feed-item-date'>Publié le " . date('d/m/Y H:i', strtotime($pubDate)) . "</div>";
+                                    echo "</div>";
+                                }
+                            }
+                        }
                     }
-                    echo "<div class='feed-item-title'>";
-                    echo "<a href='" . htmlspecialchars($link) . "' class='feed-item-link' target='_blank'>$title</a>";
-                    if ($isOld) {
-                        echo "<span class='date-indicator'> (" . formatDate($pubDate) . ")</span>";
-                    }
-                    echo "</div>";
-                    $description = (string)($item->content ?: $item->summary ?: $item->description);
-                    echo "<div class='feed-item-description'>$description</div>";
-                    echo "<div class='feed-item-date'>" . date('d/m/Y H:i', strtotime($pubDate)) . "</div>";
-                    echo "</div>";
                 }
+            } else {
+                echo "<p class='error'>Impossible de charger le flux (URL inaccessible ou timeout).</p>";
             }
+
+            echo "</div>"; // Fermeture de feed-content
+			
+			// Lien "Retour en haut"
+			echo "<div class='back-to-top'>";
+			echo "<a href='#top' class='btn btn-link' style='font-size: 0.9em;'><i class='fas fa-turn-up'></i>  Retour en haut</a>";
+			echo "</div>";
+			
+            echo "</div>"; // Fermeture du conteneur .feed
         }
+        ?>
+    </div>
 
-        // Lien "Retour en haut"
-        echo "<div class='back-to-top'>";
-        echo "<a href='#top' class='btn btn-link' style='font-size: 0.9em;'><i class='fas fa-turn-up'></i>  Retour en haut</a>";
-        echo "</div>";
+    <script>
+        function toggleFeedCollapse(feedId) {
+            const feedElement = document.querySelector(`.feed[data-feed-id="${feedId}"]`);
+            const isCollapsed = feedElement.classList.contains('collapsed');
+            const button = feedElement.querySelector('.btn-collapse');
 
-        echo "</div>"; // Fermeture de la div .feed
-    }
-    ?>
+            // Basculer l'état visuel
+            feedElement.classList.toggle('collapsed');
+            button.textContent = isCollapsed ? '−' : '+';
+
+            // Envoyer la mise à jour au serveur via AJAX
+            fetch('toggle_collapse.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: 'feed_id=' + encodeURIComponent(feedId) + '&collapsed=' + (!isCollapsed ? 'true' : 'false')
+            })
+            .catch(error => {
+                console.error('Erreur lors de la mise à jour:', error);
+                // Revenir à l'état précédent en cas d'erreur
+                feedElement.classList.toggle('collapsed');
+                button.textContent = isCollapsed ? '+' : '−';
+            });
+        }
+    </script>
 </body>
 </html>
